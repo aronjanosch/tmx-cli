@@ -1,21 +1,9 @@
-# Secrets & Session Data (NEVER commit these!)
-cookidoo_cookies.json
-cookidoo_search_token.json
+# Build artifacts
+tmx
+dist/
+
+# Config & secrets (never commit)
 *.env
-
-# Cache
-cookidoo_weekplan_raw.json
-__pycache__/
-*.pyc
-
-# Debug files
-debug_*
-*.html
-
-# Virtual environments
-.venv/
-venv/
-env/
 
 # IDE
 .vscode/

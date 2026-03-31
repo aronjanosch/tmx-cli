@@ -1,0 +1,59 @@
+version: 2
+
+project_name: tmx
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: .
+    binary: tmx
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+brews:
+  - name: tmx-cli
+    repository:
+      owner: aronjanosch
+      name: homebrew-tap
+      token: "{{ .Env.GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/aronjanosch/tmx-cli
+    description: Thermomix/Cookidoo CLI — meal plans, recipe search, and shopping lists from your terminal
+    license: MIT
+    install: bin.install "tmx"
+    test: |
+      system "#{bin}/tmx", "--version"
+
+release:
+  github:
+    owner: aronjanosch
+    name: tmx-cli
