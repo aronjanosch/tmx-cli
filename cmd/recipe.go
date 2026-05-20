@@ -3,8 +3,11 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+var htmlTagRe = regexp.MustCompile(`<[^>]+>`)
 
 type RecipeCmd struct {
 	Show RecipeShowCmd `cmd:"" help:"Show recipe details."`
@@ -34,9 +37,10 @@ func (r *RecipeShowCmd) Run(ctx *Context) error {
 		return fmt.Errorf("fetching recipe: %w", err)
 	}
 
-	if ctx.JSON {
-		fmt.Println(string(raw))
-		return nil
+	sections := recipeSections{
+		Ingredients: r.Ingredients || r.Full,
+		Steps:       r.Steps || r.Full,
+		Nutrition:   r.Nutrition || r.Full,
 	}
 
 	var data map[string]any
@@ -44,13 +48,37 @@ func (r *RecipeShowCmd) Run(ctx *Context) error {
 		return fmt.Errorf("parsing recipe: %w", err)
 	}
 
-	sections := recipeSections{
-		Ingredients: r.Ingredients || r.Full,
-		Steps:       r.Steps || r.Full,
-		Nutrition:   r.Nutrition || r.Full,
+	if ctx.JSON {
+		return ctx.PrintJSON(filterRecipe(data, sections))
 	}
+
 	printRecipe(data, sections)
 	return nil
+}
+
+// filterRecipe removes heavy fields not requested to keep JSON responses lean for agents.
+func filterRecipe(data map[string]any, show recipeSections) map[string]any {
+	drop := []string{}
+	if !show.Ingredients {
+		drop = append(drop, "recipeIngredientGroups")
+	}
+	if !show.Steps {
+		drop = append(drop, "recipeStepGroups")
+	}
+	if !show.Nutrition {
+		drop = append(drop, "nutritionGroups")
+	}
+	if len(drop) == 0 {
+		return data
+	}
+	out := make(map[string]any, len(data))
+	for k, v := range data {
+		out[k] = v
+	}
+	for _, k := range drop {
+		delete(out, k)
+	}
+	return out
 }
 
 type recipeSections struct {
@@ -172,18 +200,25 @@ func printRecipe(data map[string]any, show recipeSections) {
 
 	// Steps
 	if show.Steps {
-		if steps, ok := data["recipeSteps"].([]any); ok && len(steps) > 0 {
+		if groups, ok := data["recipeStepGroups"].([]any); ok && len(groups) > 0 {
 			fmt.Println()
 			fmt.Println("PREPARATION")
 			fmt.Println(strings.Repeat("-", 40))
-			for i, s := range steps {
-				sm, _ := s.(map[string]any)
-				desc, _ := sm["description"].(string)
-				if desc == "" {
-					desc, _ = sm["text"].(string)
+			n := 1
+			for _, g := range groups {
+				gm, _ := g.(map[string]any)
+				groupTitle, _ := gm["title"].(string)
+				if groupTitle != "" {
+					fmt.Printf("\n%s:\n", groupTitle)
 				}
-				if desc != "" {
-					fmt.Printf("  %d. %s\n", i+1, desc)
+				for _, s := range asList(gm["recipeSteps"]) {
+					sm, _ := s.(map[string]any)
+					text, _ := sm["formattedText"].(string)
+					text = strings.TrimSpace(htmlTagRe.ReplaceAllString(text, ""))
+					if text != "" {
+						fmt.Printf("  %d. %s\n", n, text)
+						n++
+					}
 				}
 			}
 		}
