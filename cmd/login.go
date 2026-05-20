@@ -24,8 +24,9 @@ const (
 )
 
 type LoginCmd struct {
-	Email    string `short:"e" help:"Email address."`
-	Password string `short:"p" help:"Password (prompted if omitted)."`
+	Email         string `short:"e" env:"TMX_EMAIL" help:"Email address."`
+	Password      string `short:"p" env:"TMX_PASSWORD" help:"Password (prompted if omitted)."`
+	PasswordStdin bool   `name:"password-stdin" help:"Read password from stdin (for CI/agent use)."`
 }
 
 func (l *LoginCmd) Run(ctx *Context) error {
@@ -37,8 +38,15 @@ func (l *LoginCmd) Run(ctx *Context) error {
 		email = strings.TrimSpace(scanner.Text())
 	}
 
-	password := l.Password
-	if password == "" {
+	var password string
+	switch {
+	case l.PasswordStdin:
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Scan()
+		password = strings.TrimSpace(scanner.Text())
+	case l.Password != "":
+		password = l.Password
+	default:
 		fmt.Print("Password: ")
 		b, err := term.ReadPassword(int(syscall.Stdin))
 		fmt.Println()
@@ -57,6 +65,9 @@ func (l *LoginCmd) Run(ctx *Context) error {
 	if err := config.SaveCookies(cookies); err != nil {
 		return fmt.Errorf("saving cookies: %w", err)
 	}
+
+	// Invalidate cached search token — new session needs fresh token.
+	_ = config.ClearCache("search_token.json")
 
 	fmt.Printf("Logged in. %d cookies saved.\n", len(cookies))
 	return nil

@@ -10,7 +10,10 @@ Manage Cookidoo® (Thermomix) meal plans, recipes, and shopping lists using `tmx
 ## Setup
 
 1. Install: `brew install aronjanosch/tap/tmx-cli` (or build from source)
-2. Login: `tmx login`
+2. Login:
+   - Interactive: `tmx login`
+   - Non-interactive (CI/agent): `TMX_EMAIL=x TMX_PASSWORD=y tmx login`
+   - Pipe (safer for secrets): `echo "$PASS" | tmx login -e user@example.com --password-stdin`
 3. Configure (optional): `tmx setup` or `tmx setup --tm TM6 --diet vegetarisch --max-time 30`
 
 ## Critical Rules
@@ -43,9 +46,19 @@ Filters: `-t <minutes>`, `--tm TM5|TM6|TM7`, `-c <category>`
 Categories: vorspeisen, suppen, pasta, fleisch, fisch, vegetarisch, beilagen, desserts, herzhaft-backen, kuchen, brot, getraenke, grundrezepte, saucen, snacks
 
 ### Recipe Details
+
+Default output: meta only (title, time, servings, difficulty). Add sections explicitly to control context size.
+
 ```bash
-tmx -j recipe show <recipe_id>   # ingredients, steps, nutrition
+tmx -j recipe show <id>          # meta only — minimal context
+tmx -j recipe show <id> -n       # + nutrition (kcal, protein, fat, carbs)
+tmx -j recipe show <id> -i       # + ingredients (for shopping)
+tmx -j recipe show <id> -s       # + preparation steps
+tmx -j recipe show <id> -n -i    # nutrition + ingredients
+tmx -j recipe show <id> --full   # all sections (ingredients, steps, nutrition)
 ```
+
+> **Context efficiency:** Prefer `-n` when you only need macros. Avoid `--full` unless all sections are required — steps alone can be 2–3k tokens.
 
 ### Meal Plan
 ```bash
@@ -119,5 +132,6 @@ tmx categories sync                 # fetch current from Cookidoo
 # Find a vegetarian pasta recipe under 30 min and add to Thursday
 ID=$(tmx -j search "pasta" -t 30 -c vegetarisch -n 1 | jq -r '.data[0].id')
 tmx plan add "$ID" thu
-tmx -j recipe show "$ID"   # confirm details
+tmx -j recipe show "$ID" -n   # confirm nutrition only
+tmx -j recipe show "$ID" --full   # or get everything
 ```

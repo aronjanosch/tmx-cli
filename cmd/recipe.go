@@ -11,7 +11,11 @@ type RecipeCmd struct {
 }
 
 type RecipeShowCmd struct {
-	ID string `arg:"" help:"Recipe ID (e.g. r130616)."`
+	ID          string `arg:"" help:"Recipe ID (e.g. r130616)."`
+	Ingredients bool   `short:"i" help:"Include ingredients."`
+	Steps       bool   `short:"s" help:"Include preparation steps."`
+	Nutrition   bool   `short:"n" help:"Include nutrition per serving."`
+	Full        bool   `short:"f" help:"Include all sections (ingredients, steps, nutrition)."`
 }
 
 func (r *RecipeShowCmd) Run(ctx *Context) error {
@@ -40,11 +44,22 @@ func (r *RecipeShowCmd) Run(ctx *Context) error {
 		return fmt.Errorf("parsing recipe: %w", err)
 	}
 
-	printRecipe(data)
+	sections := recipeSections{
+		Ingredients: r.Ingredients || r.Full,
+		Steps:       r.Steps || r.Full,
+		Nutrition:   r.Nutrition || r.Full,
+	}
+	printRecipe(data, sections)
 	return nil
 }
 
-func printRecipe(data map[string]any) {
+type recipeSections struct {
+	Ingredients bool
+	Steps       bool
+	Nutrition   bool
+}
+
+func printRecipe(data map[string]any, show recipeSections) {
 	title, _ := data["title"].(string)
 	difficulty, _ := data["difficulty"].(string)
 
@@ -85,7 +100,7 @@ func printRecipe(data map[string]any) {
 		}
 	}
 
-	// Print header
+	// Header + meta (always shown)
 	width := max(44, len(title)+4)
 	fmt.Println()
 	fmt.Println("+" + strings.Repeat("-", width) + "+")
@@ -93,7 +108,6 @@ func printRecipe(data map[string]any) {
 	fmt.Println("+" + strings.Repeat("-", width) + "+")
 	fmt.Println()
 
-	// Meta
 	if totalTime > 0 {
 		fmt.Printf("Time:        %s", formatTime(totalTime*60))
 		if activeTime > 0 {
@@ -112,84 +126,89 @@ func printRecipe(data map[string]any) {
 	}
 
 	// Ingredients
-	if groups, ok := data["recipeIngredientGroups"].([]any); ok && len(groups) > 0 {
-		fmt.Println()
-		fmt.Println("INGREDIENTS")
-		fmt.Println(strings.Repeat("-", 40))
-		for _, g := range groups {
-			group, _ := g.(map[string]any)
-			groupTitle, _ := group["title"].(string)
-			if groupTitle != "" {
-				fmt.Printf("\n%s:\n", groupTitle)
-			}
-			ingredients, _ := group["recipeIngredients"].([]any)
-			for _, ing := range ingredients {
-				item, _ := ing.(map[string]any)
-				name, _ := item["ingredientNotation"].(string)
-				unit, _ := item["unitNotation"].(string)
-				prep, _ := item["preparation"].(string)
-
-				var qty float64
-				if qMap, ok := item["quantity"].(map[string]any); ok {
-					qty, _ = qMap["value"].(float64)
+	if show.Ingredients {
+		if groups, ok := data["recipeIngredientGroups"].([]any); ok && len(groups) > 0 {
+			fmt.Println()
+			fmt.Println("INGREDIENTS")
+			fmt.Println(strings.Repeat("-", 40))
+			for _, g := range groups {
+				group, _ := g.(map[string]any)
+				groupTitle, _ := group["title"].(string)
+				if groupTitle != "" {
+					fmt.Printf("\n%s:\n", groupTitle)
 				}
+				ingredients, _ := group["recipeIngredients"].([]any)
+				for _, ing := range ingredients {
+					item, _ := ing.(map[string]any)
+					name, _ := item["ingredientNotation"].(string)
+					unit, _ := item["unitNotation"].(string)
+					prep, _ := item["preparation"].(string)
 
-				line := "  "
-				if qty > 0 {
-					if qty == float64(int(qty)) {
-						line += fmt.Sprintf("%d ", int(qty))
-					} else {
-						line += fmt.Sprintf("%.1f ", qty)
+					var qty float64
+					if qMap, ok := item["quantity"].(map[string]any); ok {
+						qty, _ = qMap["value"].(float64)
 					}
+
+					line := "  "
+					if qty > 0 {
+						if qty == float64(int(qty)) {
+							line += fmt.Sprintf("%d ", int(qty))
+						} else {
+							line += fmt.Sprintf("%.1f ", qty)
+						}
+					}
+					if unit != "" {
+						line += unit + " "
+					}
+					line += name
+					if prep != "" {
+						line += ", " + prep
+					}
+					fmt.Println(line)
 				}
-				if unit != "" {
-					line += unit + " "
-				}
-				line += name
-				if prep != "" {
-					line += ", " + prep
-				}
-				fmt.Println(line)
 			}
 		}
 	}
 
 	// Steps
-	if steps, ok := data["recipeSteps"].([]any); ok && len(steps) > 0 {
-		fmt.Println()
-		fmt.Println("PREPARATION")
-		fmt.Println(strings.Repeat("-", 40))
-		for i, s := range steps {
-			sm, _ := s.(map[string]any)
-			desc, _ := sm["description"].(string)
-			if desc == "" {
-				// some APIs nest under "text" or "stepText"
-				desc, _ = sm["text"].(string)
-			}
-			if desc != "" {
-				fmt.Printf("  %d. %s\n", i+1, desc)
+	if show.Steps {
+		if steps, ok := data["recipeSteps"].([]any); ok && len(steps) > 0 {
+			fmt.Println()
+			fmt.Println("PREPARATION")
+			fmt.Println(strings.Repeat("-", 40))
+			for i, s := range steps {
+				sm, _ := s.(map[string]any)
+				desc, _ := sm["description"].(string)
+				if desc == "" {
+					desc, _ = sm["text"].(string)
+				}
+				if desc != "" {
+					fmt.Printf("  %d. %s\n", i+1, desc)
+				}
 			}
 		}
 	}
 
 	// Nutrition
-	nutrition := parseNutrition(data)
-	if len(nutrition) > 0 {
-		fmt.Println()
-		fmt.Println("NUTRITION (per serving)")
-		fmt.Println(strings.Repeat("-", 40))
-		order := []string{"kcal", "kJ", "protein", "carb", "carb2", "fat", "dietaryFibre"}
-		printed := map[string]bool{}
-		for _, k := range order {
-			if v, ok := nutrition[k]; ok {
-				label := nutritionLabel(k)
-				fmt.Printf("  %-14s %s\n", label+":", v)
-				printed[k] = true
+	if show.Nutrition {
+		nutrition := parseNutrition(data)
+		if len(nutrition) > 0 {
+			fmt.Println()
+			fmt.Println("NUTRITION (per serving)")
+			fmt.Println(strings.Repeat("-", 40))
+			order := []string{"kcal", "kJ", "protein", "carb", "carb2", "fat", "dietaryFibre"}
+			printed := map[string]bool{}
+			for _, k := range order {
+				if v, ok := nutrition[k]; ok {
+					label := nutritionLabel(k)
+					fmt.Printf("  %-14s %s\n", label+":", v)
+					printed[k] = true
+				}
 			}
-		}
-		for k, v := range nutrition {
-			if !printed[k] {
-				fmt.Printf("  %-14s %s\n", k+":", v)
+			for k, v := range nutrition {
+				if !printed[k] {
+					fmt.Printf("  %-14s %s\n", k+":", v)
+				}
 			}
 		}
 	}
@@ -210,15 +229,38 @@ func parseNutrition(data map[string]any) map[string]string {
 			for _, n := range asList(rnMap["nutritions"]) {
 				nMap, _ := n.(map[string]any)
 				typ, _ := nMap["type"].(string)
-				num, _ := nMap["number"].(float64)
-				unit, _ := nMap["unittype"].(string)
+				num := parseNumber(nMap["number"])
+				unit := firstString(nMap["unittype"], nMap["unitType"])
 				if typ != "" && num > 0 {
-					result[typ] = fmt.Sprintf("%.0f %s", num, unit)
+					result[typ] = fmt.Sprintf("%.0f %s", num, strings.TrimSpace(unit))
 				}
 			}
 		}
 	}
 	return result
+}
+
+func parseNumber(v any) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case int:
+		return float64(x)
+	case string:
+		var f float64
+		fmt.Sscanf(x, "%f", &f)
+		return f
+	}
+	return 0
+}
+
+func firstString(vals ...any) string {
+	for _, v := range vals {
+		if s, ok := v.(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func nutritionLabel(key string) string {
