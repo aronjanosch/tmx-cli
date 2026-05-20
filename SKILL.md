@@ -116,8 +116,12 @@ tmx categories sync                 # fetch current from Cookidoo
 // search results — totalTimeMinutes is in minutes (not seconds)
 {"data": [{id, title, url, totalTimeMinutes, rating}], "count": N, "total": N}
 
-// single object
-{ ...fields... }
+// recipe show — heavy fields only present when flag requested
+// no flags:   {id, title, difficulty, times, servingSize, thermomixVersions, ...meta}
+// -i flag:    + recipeIngredientGroups
+// -s flag:    + recipeStepGroups
+// -n flag:    + nutritionGroups
+// --full:     all three included
 
 // mutations
 {"status": "added|removed|moved", "id": "r123"}
