@@ -30,11 +30,14 @@ func main() {
 	}
 
 	cmdCtx := &cmd.Context{
-		Config: cfg,
-		JSON:   cli.JSON,
+		Config:  cfg,
+		JSON:    cli.JSON,
+		Compact: cli.Compact,
 	}
 
-	if err := ctx.Run(cmdCtx); err != nil {
+	err = ctx.Run(cmdCtx)
+	cmdCtx.PersistSession()
+	if err != nil {
 		cmdCtx.PrintError(err.Error())
 		if errors.Is(err, client.ErrUnauthorized) {
 			os.Exit(3)

@@ -172,17 +172,17 @@ func printRecipe(d *api.RecipeDetail, show recipeSections) {
 		fmt.Println()
 		fmt.Println("NUTRITION (per serving)")
 		fmt.Println(strings.Repeat("-", 40))
-		order := []string{"kcal", "kJ", "protein", "carb", "carb2", "fat", "dietaryFibre"}
+		order := []string{"kcal", "kJ", "protein", "carbs", "fat", "fiber"}
 		printed := map[string]bool{}
 		for _, k := range order {
 			if v, ok := d.Nutrition[k]; ok {
-				fmt.Printf("  %-14s %s\n", nutritionLabel(k)+":", v)
+				fmt.Printf("  %-14s %.0f %s\n", nutritionLabel(k)+":", v.Value, v.Unit)
 				printed[k] = true
 			}
 		}
 		for k, v := range d.Nutrition {
 			if !printed[k] {
-				fmt.Printf("  %-14s %s\n", k+":", v)
+				fmt.Printf("  %-14s %.0f %s\n", k+":", v.Value, v.Unit)
 			}
 		}
 	}
@@ -192,13 +192,12 @@ func printRecipe(d *api.RecipeDetail, show recipeSections) {
 
 func nutritionLabel(key string) string {
 	labels := map[string]string{
-		"kcal":         "Calories",
-		"kJ":           "Energy (kJ)",
-		"protein":      "Protein",
-		"carb":         "Carbs",
-		"carb2":        "Carbs",
-		"fat":          "Fat",
-		"dietaryFibre": "Fiber",
+		"kcal":    "Calories",
+		"kJ":      "Energy (kJ)",
+		"protein": "Protein",
+		"carbs":   "Carbs",
+		"fat":     "Fat",
+		"fiber":   "Fiber",
 	}
 	if l, ok := labels[key]; ok {
 		return l

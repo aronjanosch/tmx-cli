@@ -21,7 +21,20 @@ type RecipeDetail struct {
 	Categories        []string           `json:"categories,omitempty"`
 	Ingredients       []RecipeIngredient `json:"ingredients,omitempty"`
 	Steps             []RecipeStep       `json:"steps,omitempty"`
-	Nutrition         map[string]string  `json:"nutrition,omitempty"`
+	// Nutrition is per serving. Keys are normalized (carbs, fiber, ...).
+	Nutrition map[string]NutritionValue `json:"nutrition,omitempty"`
+}
+
+type NutritionValue struct {
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit,omitempty"`
+}
+
+// nutritionKeyAliases normalizes the API's odd nutrition type names.
+var nutritionKeyAliases = map[string]string{
+	"carb":         "carbs",
+	"carb2":        "carbs",
+	"dietaryFibre": "fiber",
 }
 
 type RecipeIngredient struct {
@@ -140,7 +153,7 @@ func ParseRecipeDetail(data []byte, baseURL, locale string) (*RecipeDetail, erro
 		}
 	}
 
-	nutrition := map[string]string{}
+	nutrition := map[string]NutritionValue{}
 	for _, g := range raw.NutritionGroups {
 		for _, rn := range g.RecipeNutritions {
 			for _, n := range rn.Nutritions {
@@ -149,8 +162,12 @@ func ParseRecipeDetail(data []byte, baseURL, locale string) (*RecipeDetail, erro
 				if unit == "" {
 					unit = n.UnitType
 				}
-				if n.Type != "" && num > 0 {
-					nutrition[n.Type] = strings.TrimSpace(fmt.Sprintf("%.0f %s", num, strings.TrimSpace(unit)))
+				key := n.Type
+				if alias, ok := nutritionKeyAliases[key]; ok {
+					key = alias
+				}
+				if key != "" && num > 0 {
+					nutrition[key] = NutritionValue{Value: num, Unit: strings.TrimSpace(unit)}
 				}
 			}
 		}

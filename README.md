@@ -47,6 +47,9 @@ tmx search "salad" -t 15                  # max 15 minutes
 tmx search "" -c vegetarisch              # browse by category
 tmx search "soup" --tm TM6                # filter by TM version
 tmx search "" --min-rating 4              # well-rated only
+tmx search "" --diet low-carb             # vegetarian|vegan|pescetarian|low-carb|keto
+tmx search "" --goal high-protein         # low-calories|low-fat|high-fibre|...
+tmx search "" --free-of gluten            # lactose|nut|sugar|meat|...
 tmx search "" -I Kürbis -I Zwiebel        # recipes using these ingredients
 tmx search "curry" -x Fleisch             # without an ingredient
 ```

@@ -13,9 +13,10 @@ import (
 )
 
 type Context struct {
-	Config *config.Config
-	JSON   bool
-	client *client.Client
+	Config  *config.Config
+	JSON    bool
+	Compact bool
+	client  *client.Client
 }
 
 // Client returns a lazy-initialized HTTP client with stored cookies.
@@ -51,8 +52,21 @@ func (c *Context) Client() (*client.Client, error) {
 // PrintJSON marshals v and writes it to stdout.
 func (c *Context) PrintJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
+	if !c.Compact {
+		enc.SetIndent("", "  ")
+	}
 	return enc.Encode(v)
+}
+
+// PersistSession writes the (possibly rotated) session cookies back to disk.
+// The oauth2 proxy refreshes tokens inside the cookie; keeping the newest
+// value avoids stale-session errors on later invocations.
+func (c *Context) PersistSession() {
+	if c.client != nil {
+		if cookies := c.client.Cookies(); len(cookies) > 0 {
+			_ = config.SaveCookies(cookies)
+		}
+	}
 }
 
 // PrintError writes a JSON error object to stdout (for agent parsing) or plain text to stderr.
@@ -81,4 +95,5 @@ type CLI struct {
 
 	Version kong.VersionFlag `short:"v" name:"version" help:"Print version and exit."`
 	JSON    bool             `short:"j" name:"json" help:"Output JSON."`
+	Compact bool             `name:"compact" help:"Compact (non-indented) JSON output."`
 }

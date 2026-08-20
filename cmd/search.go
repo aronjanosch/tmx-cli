@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -42,9 +43,41 @@ type SearchCmd struct {
 	TM         string   `name:"tm" help:"Thermomix version: TM5|TM6|TM7."`
 	Category   string   `short:"c" help:"Category filter (e.g. pasta, vegetarisch)."`
 	MinRating  float64  `name:"min-rating" help:"Minimum rating (0-5)."`
+	Diet       string   `help:"Diet: vegetarian|vegan|pescetarian|low-carb|keto."`
+	Goal       string   `help:"Nutrition goal: high-protein|low-calories|low-fat|high-fibre|low-sodium|low-histamine."`
+	FreeOf     []string `name:"free-of" help:"Free of: gluten|lactose|nut|sugar|meat|seafood|alcohol|caffeine (repeatable)."`
 	Ingredient []string `short:"I" help:"Must use this ingredient (repeatable, verified against the recipe)."`
 	Exclude    []string `short:"x" help:"Must NOT use this ingredient (repeatable, verified against the recipe)."`
+	Images     bool     `help:"Include image URLs in JSON output."`
 	NoPrefs    bool     `name:"no-prefs" help:"Ignore preferences from tmx setup."`
+}
+
+// Facet enum mappings (flag value → Algolia facet token).
+var dietFacets = map[string]string{
+	"vegetarian": "vegetarian", "vegetarisch": "vegetarian",
+	"vegan": "vegan", "pescetarian": "pescetarian",
+	"low-carb": "low_carb", "low_carb": "low_carb", "keto": "keto",
+}
+
+var goalFacets = map[string]string{
+	"high-protein": "high_protein", "low-calories": "low_calories",
+	"low-fat": "low_fat", "high-fibre": "high_fibre", "high-fiber": "high_fibre",
+	"low-sodium": "low_sodium", "low-histamine": "low_histamine",
+}
+
+var freeOfFacets = map[string]string{
+	"gluten": "gluten_free", "lactose": "lactose_free", "nut": "nut_free",
+	"sugar": "sugar_free", "meat": "without_meat", "seafood": "without_seafood",
+	"alcohol": "alcohol_free", "caffeine": "caffeine_free",
+}
+
+func facetKeys(m map[string]string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
 }
 
 // appliedFilters echoes what was actually sent, so agents see which
@@ -57,6 +90,8 @@ type appliedFilters struct {
 	TM             string   `json:"tm,omitempty"`
 	MinRating      float64  `json:"minRating,omitempty"`
 	Diet           string   `json:"diet,omitempty"`
+	Goal           string   `json:"goal,omitempty"`
+	FreeOf         []string `json:"freeOf,omitempty"`
 	Ingredients    []string `json:"ingredients,omitempty"`
 	Exclude        []string `json:"excludeIngredients,omitempty"`
 	Backend        string   `json:"backend,omitempty"`
@@ -73,16 +108,8 @@ func (s *SearchCmd) Run(ctx *Context) error {
 		if s.Time == 0 && ctx.Config.MaxTime > 0 {
 			s.Time = ctx.Config.MaxTime
 		}
-		// Diet preference: use as category when it matches one, otherwise
-		// fold it into the query text.
-		if diet := strings.ToLower(ctx.Config.Diet); diet != "" && s.Category == "" {
-			cats, _ := loadCategoriesCache()
-			if _, ok := cats[diet]; ok {
-				s.Category = diet
-			} else {
-				s.Query = strings.TrimSpace(diet + " " + s.Query)
-			}
-			applied.Diet = diet
+		if s.Diet == "" {
+			s.Diet = strings.ToLower(ctx.Config.Diet)
 		}
 	}
 
@@ -91,7 +118,9 @@ func (s *SearchCmd) Run(ctx *Context) error {
 		return err
 	}
 
-	filters := []string{}
+	// Recipes of all markets share one index — pin to our language.
+	lang := strings.SplitN(locale, "-", 2)[0]
+	filters := []string{fmt.Sprintf("language:%s", lang)}
 	if s.Time > 0 {
 		filters = append(filters, fmt.Sprintf("totalTime <= %d", s.Time*60))
 	}
@@ -103,6 +132,27 @@ func (s *SearchCmd) Run(ctx *Context) error {
 	}
 	if s.MinRating > 0 {
 		filters = append(filters, fmt.Sprintf("rating >= %g", s.MinRating))
+	}
+	if s.Diet != "" {
+		facet, ok := dietFacets[strings.ToLower(s.Diet)]
+		if !ok {
+			return fmt.Errorf("unknown diet %q — valid: %s", s.Diet, facetKeys(dietFacets))
+		}
+		filters = append(filters, fmt.Sprintf("dietary:%s", facet))
+	}
+	if s.Goal != "" {
+		facet, ok := goalFacets[strings.ToLower(s.Goal)]
+		if !ok {
+			return fmt.Errorf("unknown goal %q — valid: %s", s.Goal, facetKeys(goalFacets))
+		}
+		filters = append(filters, fmt.Sprintf("nutritionGoal:%s", facet))
+	}
+	for _, f := range s.FreeOf {
+		facet, ok := freeOfFacets[strings.ToLower(f)]
+		if !ok {
+			return fmt.Errorf("unknown --free-of %q — valid: %s", f, facetKeys(freeOfFacets))
+		}
+		filters = append(filters, fmt.Sprintf("freeOfIngredient:%s", facet))
 	}
 	if s.Category != "" {
 		catID, err := resolveCategory(s.Category)
@@ -118,6 +168,9 @@ func (s *SearchCmd) Run(ctx *Context) error {
 	applied.Difficulty = s.Difficulty
 	applied.TM = s.TM
 	applied.MinRating = s.MinRating
+	applied.Diet = s.Diet
+	applied.Goal = s.Goal
+	applied.FreeOf = s.FreeOf
 
 	// Ingredient constraints: fold -I terms into the query for ranking, then
 	// verify against each candidate's real ingredient list. Free-text facets
@@ -158,14 +211,18 @@ func (s *SearchCmd) Run(ctx *Context) error {
 
 	results := make([]api.SearchResult, 0, len(result.Hits))
 	for _, hit := range result.Hits {
-		results = append(results, api.SearchResult{
+		r := api.SearchResult{
 			ID:        hit.ID,
 			Title:     hit.Title,
 			URL:       fmt.Sprintf("%s/recipes/recipe/%s/%s", cookidooBase, locale, hit.ID),
-			Image:     resolveImageURL(hit.Image),
 			TotalTime: int(hit.TotalTime) / 60,
-			Rating:    hit.Rating,
-		})
+			// Full float precision is noise for agents.
+			Rating: math.Round(hit.Rating*10) / 10,
+		}
+		if s.Images {
+			r.Image = resolveImageURL(hit.Image)
+		}
+		results = append(results, r)
 	}
 
 	if verify {

@@ -115,6 +115,11 @@ func (c *Client) Request(method, path string, payload any, headers map[string]st
 
 func (c *Client) do(method, rawURL string, body []byte, headers map[string]string) ([]byte, error) {
 	raw, status, err := c.doOnce(method, rawURL, body, headers)
+	// Retry idempotent GETs once on transport errors or server hiccups.
+	if method == http.MethodGet && (err != nil || status >= 500) {
+		time.Sleep(500 * time.Millisecond)
+		raw, status, err = c.doOnce(method, rawURL, body, headers)
+	}
 	if err != nil {
 		return nil, err
 	}

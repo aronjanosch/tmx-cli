@@ -63,9 +63,9 @@ func (w *WhoamiCmd) Run(ctx *Context) error {
 	}
 
 	if ctx.JSON {
-		out := map[string]any{
-			"id":       profile.ID,
-			"username": profile.UserInfo.Username,
+		out := map[string]any{"id": profile.ID}
+		if profile.UserInfo.Username != "" {
+			out["username"] = profile.UserInfo.Username
 		}
 		if current != nil {
 			out["subscription"] = current
@@ -73,7 +73,11 @@ func (w *WhoamiCmd) Run(ctx *Context) error {
 		return ctx.PrintJSON(out)
 	}
 
-	fmt.Printf("User:      %s (%s)\n", profile.UserInfo.Username, profile.ID)
+	name := profile.UserInfo.Username
+	if name == "" {
+		name = "(no username set)"
+	}
+	fmt.Printf("User:      %s (%s)\n", name, profile.ID)
 	if current != nil {
 		fmt.Printf("Plan:      %s (%s)\n", current.Type, current.Status)
 		if current.Expires != "" {

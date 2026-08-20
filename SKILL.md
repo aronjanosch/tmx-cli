@@ -41,22 +41,30 @@ tmx [--json] <command> [subcommand] [args] [flags]
 tmx -j search "Pasta"
 tmx -j search "Kuchen" -n 20
 tmx -j search "Suppe" -t 30                  # max 30 min
+tmx -j search "" --diet low-carb             # server-side diet filter
+tmx -j search "" --diet vegan --goal high-protein
+tmx -j search "" --free-of gluten --free-of lactose
 tmx -j search "Salat" -c vegetarisch         # by category
-tmx -j search "" --tm TM6                    # by TM version
-tmx -j search "" --min-rating 4              # well-rated only
+tmx -j search "" --tm TM6 --min-rating 4
 tmx -j search "" -I Kürbis -I Zwiebel        # must use these ingredients
-tmx -j search "Curry" -x Fleisch             # must NOT use this ingredient
+tmx -j search "Curry" -x Fleisch -x Hähnchen # must NOT use these ingredients
 ```
 
 Filters: `-t <minutes>`, `--tm TM5|TM6|TM7`, `-c <category>`, `--min-rating <0-5>`,
-`-I/--ingredient` (repeatable), `-x/--exclude` (repeatable), `--no-prefs`.
+`--diet vegetarian|vegan|pescetarian|low-carb|keto`,
+`--goal high-protein|low-calories|low-fat|high-fibre|low-sodium|low-histamine`,
+`--free-of gluten|lactose|nut|sugar|meat|seafood|alcohol|caffeine` (repeatable),
+`-I/--ingredient` and `-x/--exclude` (repeatable, verified against real recipe
+ingredients — use the actual German words, add synonyms for exclusions),
+`--images` (include image URLs, omitted by default), `--no-prefs`.
 
-Setup preferences (TM version, max time, diet) auto-apply; the JSON output echoes
-an `applied` object with what was actually sent. `--no-prefs` disables this.
-An unknown `-c` value errors and lists valid categories.
+Setup preferences (TM version, max time, diet) auto-apply; the JSON `applied`
+object echoes what was actually sent. Unknown `-c`/`--diet`/`--goal`/`--free-of`
+values error and list the valid options. Results are pinned to German recipes.
 
-> **Note:** Search results contain `id, title, totalTimeMinutes, rating` only — no
-> nutrition data. To filter by macros, batch-fetch: `tmx -j recipe show <id...> -n`.
+> `total` = recipes matching the query AND all filters (not the index size).
+> Fewer than `-n` results simply means fewer matches.
+> Search results contain no nutrition — batch-fetch macros: `tmx -j recipe show <id...> -n`.
 
 Categories: vorspeisen, suppen, pasta, fleisch, fisch, vegetarisch, beilagen, desserts, herzhaft-backen, kuchen, brot, getraenke, grundrezepte, saucen, snacks (refresh: `tmx categories sync`)
 
@@ -80,10 +88,14 @@ tmx -j recipe show <id> --raw        # unmodified Cookidoo API response (debuggi
 
 **"I have 600 kcal left today — what can I eat?"**
 ```bash
-tmx -j search "Abendessen" -n 8 --min-rating 4        # candidates (respects prefs)
+tmx -j search "" --goal low-calories -n 8 --min-rating 4
 tmx -j recipe show r1 r2 r3 r4 -n                     # batch nutrition, one call
-# pick recipes where nutrition.kcal <= 600, present 2-3 options with kcal/protein
+# pick recipes where .nutrition.kcal.value <= 600, present 2-3 options with kcal/protein
 ```
+
+> Query text is a literal match — meal words like "Abendessen" barely appear in
+> recipe text and can zero out results. Prefer `""` + facet filters for browsing;
+> use query text for dishes/ingredients ("Curry", "Lasagne").
 
 **"I have these leftover ingredients — anything we can make?"**
 ```bash
@@ -94,12 +106,20 @@ tmx -j recipe show <top_ids> -i                       # check what else is neede
 
 **"Something vegetarian / fitness / low carb"**
 ```bash
-tmx -j search "Low Carb" -c vegetarisch -n 8          # category + free-text
+tmx -j search "" --diet vegetarian --goal high-protein -n 8   # or --diet low-carb / keto
 tmx -j recipe show <ids> -n                           # verify macros before recommending
 ```
 
 After the user picks: `tmx plan add <id>` (today) and optionally `tmx shopping add <id>`.
-Nothing beats checking macros — search text alone does not guarantee "low carb".
+Nothing beats checking macros — `--diet low-carb` narrows well, but always confirm
+`.nutrition.carbs.value` before promising numbers to the user.
+
+## Behavior notes for agents
+
+- **Nutrition is per serving.** Values are numeric with a unit: `{"kcal": {"value": 619, "unit": "kcal"}, "carbs": {"value": 96, "unit": "g"}}`. Keys are normalized (`carbs`, `fiber`); the set varies per recipe (some have `saturatedFat`/`sodium`, some lack `fiber`).
+- **Deletes do not prompt.** `recipe delete`, `collections delete`, `shopping clear` etc. execute immediately with exit 0 — confirm with the user BEFORE running them.
+- **Transient errors:** on an unexpected `{"error": ...}` from a normally working command, retry once before reporting failure (the CLI already retries GETs internally, but token refresh races can still surface).
+- `--compact` (global flag) emits non-indented JSON if you're counting tokens.
 
 ### Import Any Recipe (custom recipes)
 
@@ -224,9 +244,10 @@ tmx categories sync                 # fetch current from Cookidoo
 // recipe import
 {"status": "imported", "id": "<ulid>", "title": "...", "url": "https://cookidoo.de/recipes/custom-recipes/<ulid>"}
 
-// search results — totalTimeMinutes is in minutes (not seconds)
+// search results — totalTimeMinutes is in minutes; rating rounded to 1 decimal;
+// image only present with --images; total = matches after all filters
 {"data": [{id, title, url, totalTimeMinutes, rating}], "count": N, "total": N,
- "applied": {query, category, maxTimeMinutes, tm, diet, ingredients, ...}}
+ "applied": {query, category, maxTimeMinutes, tm, diet, goal, freeOf, ingredients, ...}}
 
 // recipe show — compact schema; sections only present when flag requested
 // single ID → one object; multiple IDs → {"data": [...], "count": N}
@@ -236,7 +257,8 @@ tmx categories sync                 # fetch current from Cookidoo
   "difficulty": "easy", "tmVersions": ["TM6"], "categories": ["..."],
   "ingredients": [{name, quantity, unit, preparation, optional, group}],   // -i
   "steps": [{text, group}],                                                // -s
-  "nutrition": {"kcal": "350 kcal", "protein": "12 g", ...}                // -n
+  "nutrition": {"kcal": {"value": 350, "unit": "kcal"},                    // -n (per serving)
+                "protein": {"value": 12, "unit": "g"}, "carbs": {...}, ...}
 }
 
 // mutations
