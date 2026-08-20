@@ -89,6 +89,54 @@ func ClearCookies() error {
 	return err
 }
 
+// Credentials (opt-in via `tmx login --save`) for automatic re-login.
+
+type Credentials struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func SaveCredentials(email, password string) error {
+	if err := os.MkdirAll(Dir(), 0700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(Credentials{Email: email, Password: password}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path("credentials.json"), data, 0600)
+}
+
+// LoadCredentials returns stored credentials; env vars TMX_EMAIL/TMX_PASSWORD
+// take precedence. Returns nil if neither is available.
+func LoadCredentials() *Credentials {
+	if email, password := os.Getenv("TMX_EMAIL"), os.Getenv("TMX_PASSWORD"); email != "" && password != "" {
+		return &Credentials{Email: email, Password: password}
+	}
+	data, err := os.ReadFile(path("credentials.json"))
+	if err != nil {
+		return nil
+	}
+	var c Credentials
+	if err := json.Unmarshal(data, &c); err != nil || c.Email == "" || c.Password == "" {
+		return nil
+	}
+	return &c
+}
+
+func ClearCredentials() error {
+	err := os.Remove(path("credentials.json"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func HasCredentialsFile() bool {
+	_, err := os.Stat(path("credentials.json"))
+	return err == nil
+}
+
 // Generic JSON cache helpers
 
 func LoadCache(name string, v any) error {

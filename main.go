@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/alecthomas/kong"
 	"github.com/aronjanosch/tmx-cli/cmd"
+	"github.com/aronjanosch/tmx-cli/internal/client"
 	"github.com/aronjanosch/tmx-cli/internal/config"
 )
 
@@ -32,5 +34,11 @@ func main() {
 		JSON:   cli.JSON,
 	}
 
-	ctx.FatalIfErrorf(ctx.Run(cmdCtx))
+	if err := ctx.Run(cmdCtx); err != nil {
+		cmdCtx.PrintError(err.Error())
+		if errors.Is(err, client.ErrUnauthorized) {
+			os.Exit(3)
+		}
+		os.Exit(1)
+	}
 }

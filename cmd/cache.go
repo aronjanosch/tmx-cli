@@ -24,6 +24,9 @@ func (c *CacheClearCmd) Run(ctx *Context) error {
 		if err := config.ClearCookies(); err != nil {
 			return fmt.Errorf("clearing cookies: %w", err)
 		}
+		if ctx.JSON {
+			return ctx.PrintJSON(map[string]string{"status": "cleared", "session": "cleared"})
+		}
 		fmt.Println("Cache and session cleared.")
 		return nil
 	}

@@ -18,11 +18,13 @@ func (s *StatusCmd) Run(ctx *Context) error {
 
 	if ctx.JSON {
 		return ctx.PrintJSON(map[string]any{
-			"logged_in":  loggedIn,
-			"config_dir": configDir,
-			"tm_version": cfg.TMVersion,
-			"diet":       cfg.Diet,
-			"max_time":   cfg.MaxTime,
+			"logged_in":          loggedIn,
+			"auto_relogin":       config.LoadCredentials() != nil,
+			"credentials_stored": config.HasCredentialsFile(),
+			"config_dir":         configDir,
+			"tm_version":         cfg.TMVersion,
+			"diet":               cfg.Diet,
+			"max_time":           cfg.MaxTime,
 		})
 	}
 
@@ -32,6 +34,11 @@ func (s *StatusCmd) Run(ctx *Context) error {
 		fmt.Println("Login:       logged in")
 	} else {
 		fmt.Println("Login:       not logged in (run: tmx login)")
+	}
+	if config.LoadCredentials() != nil {
+		fmt.Println("Auto-login:  enabled")
+	} else {
+		fmt.Println("Auto-login:  off (enable: tmx login --save)")
 	}
 	fmt.Printf("Config dir:  %s\n", configDir)
 	if cfg.TMVersion != "" {

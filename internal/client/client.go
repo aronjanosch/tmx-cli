@@ -3,20 +3,30 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strings"
 	"time"
 )
 
 const base = "https://cookidoo.de"
 
+// ErrUnauthorized signals an expired/invalid session. main maps it to exit code 3.
+var ErrUnauthorized = errors.New("session expired — run: tmx login")
+
 type Client struct {
 	http    *http.Client
 	jar     *cookiejar.Jar
 	baseURL *url.URL
+
+	// Relogin, if set, is called once on the first 401 to obtain fresh
+	// session cookies; the failed request is then retried.
+	Relogin      func() ([]*http.Cookie, error)
+	reloginTried bool
 }
 
 func New(cookies []*http.Cookie) (*Client, error) {
@@ -54,7 +64,7 @@ func (c *Client) PostJSON(path string, payload any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.do("POST", base+path, bytes.NewReader(body), map[string]string{
+	return c.do("POST", base+path, body, map[string]string{
 		"Content-Type": "application/json",
 	})
 }
@@ -64,7 +74,7 @@ func (c *Client) PutJSON(path string, payload any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.do("PUT", base+path, bytes.NewReader(body), map[string]string{
+	return c.do("PUT", base+path, body, map[string]string{
 		"Content-Type": "application/json",
 	})
 }
@@ -75,7 +85,7 @@ func (c *Client) Delete(path string) error {
 }
 
 func (c *Client) PostForm(path string, values url.Values) ([]byte, error) {
-	return c.do("POST", base+path, bytes.NewBufferString(values.Encode()), map[string]string{
+	return c.do("POST", base+path, []byte(values.Encode()), map[string]string{
 		"Content-Type": "application/x-www-form-urlencoded",
 	})
 }
@@ -84,10 +94,62 @@ func (c *Client) GetURL(rawURL string) ([]byte, error) {
 	return c.do("GET", rawURL, nil, nil)
 }
 
-func (c *Client) do(method, rawURL string, body io.Reader, headers map[string]string) ([]byte, error) {
-	req, err := http.NewRequest(method, rawURL, body)
+// Request performs a request with optional JSON payload and extra headers
+// (e.g. vendor Accept headers required by the organize API).
+func (c *Client) Request(method, path string, payload any, headers map[string]string) ([]byte, error) {
+	var body []byte
+	h := map[string]string{}
+	for k, v := range headers {
+		h[k] = v
+	}
+	if payload != nil {
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		body = raw
+		h["Content-Type"] = "application/json"
+	}
+	return c.do(method, base+path, body, h)
+}
+
+func (c *Client) do(method, rawURL string, body []byte, headers map[string]string) ([]byte, error) {
+	raw, status, err := c.doOnce(method, rawURL, body, headers)
 	if err != nil {
 		return nil, err
+	}
+
+	if status == http.StatusUnauthorized && c.Relogin != nil && !c.reloginTried {
+		c.reloginTried = true
+		cookies, loginErr := c.Relogin()
+		if loginErr != nil {
+			return nil, fmt.Errorf("%w (auto re-login failed: %v)", ErrUnauthorized, loginErr)
+		}
+		c.jar.SetCookies(c.baseURL, cookies)
+		raw, status, err = c.doOnce(method, rawURL, body, headers)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if status == http.StatusUnauthorized {
+		return nil, ErrUnauthorized
+	}
+	if status >= 400 {
+		return nil, fmt.Errorf("HTTP %d: %s", status, truncate(strings.TrimSpace(string(raw)), 200))
+	}
+
+	return raw, nil
+}
+
+func (c *Client) doOnce(method, rawURL string, body []byte, headers map[string]string) ([]byte, int, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, rawURL, reader)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	req.Header.Set("User-Agent", "tmx-cli/1.0")
@@ -98,20 +160,16 @@ func (c *Client) do(method, rawURL string, body io.Reader, headers map[string]st
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))
-	}
-
-	return raw, nil
+	return raw, resp.StatusCode, nil
 }
 
 func truncate(s string, max int) string {
