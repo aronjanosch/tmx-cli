@@ -99,7 +99,10 @@ func (f *FavoritesRemoveCmd) Run(ctx *Context) error {
 	return nil
 }
 
-var favTileRe = regexp.MustCompile(`(?s)<core-tile\s+[^>]*data-recipe-id="([^"]+)"[^>]*>(.*?)</core-tile>`)
+var (
+	favTileRe   = regexp.MustCompile(`(?s)<core-tile\s+[^>]*data-recipe-id="([^"]+)"[^>]*>(.*?)</core-tile>`)
+	tileTitleRe = regexp.MustCompile(`class="core-tile__description-text">([^<]+)<`)
+)
 
 func parseFavoritesHTML(html string) []api.PlanRecipe {
 	var recipes []api.PlanRecipe

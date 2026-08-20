@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/aronjanosch/tmx-cli/internal/api"
@@ -30,7 +28,7 @@ func (p *PlanShowCmd) Run(ctx *Context) error {
 	}
 
 	if ctx.JSON {
-		out := map[string]any{"data": days}
+		out := map[string]any{"data": days, "count": len(days)}
 		if info, err := os.Stat(filepath.Join(config.Dir(), "weekplan.json")); err == nil {
 			out["syncedAt"] = info.ModTime().UTC().Format(time.RFC3339)
 		}
@@ -56,59 +54,97 @@ func (p *PlanSyncCmd) Run(ctx *Context) error {
 	if since == "" {
 		since = time.Now().Format("2006-01-02")
 	}
-
-	today := time.Now().Format("2006-01-02")
 	sinceDate, err := time.Parse("2006-01-02", since)
 	if err != nil {
 		return fmt.Errorf("invalid date: %s", since)
 	}
 
-	var allDays []api.PlanDay
-	weeks := (p.Days + 6) / 7
-	for i := 0; i < weeks; i++ {
-		weekDate := sinceDate.AddDate(0, 0, i*7).Format("2006-01-02")
-		raw, err := cl.Get(fmt.Sprintf("/planning/%s/calendar/week?date=%s&today=%s", locale, weekDate, today))
+	// The API returns the calendar week (Mon–Sun) containing the given date,
+	// so walk Monday anchors until the whole requested range is covered.
+	monday := sinceDate.AddDate(0, 0, -(int(sinceDate.Weekday())+6)%7)
+	endDate := sinceDate.AddDate(0, 0, p.Days-1)
+
+	byDate := map[string]api.MyDay{}
+	for anchor := monday; !anchor.After(endDate); anchor = anchor.AddDate(0, 0, 7) {
+		weekDate := anchor.Format("2006-01-02")
+		raw, err := cl.Get(fmt.Sprintf("/planning/%s/api/my-week/%s", locale, weekDate))
 		if err != nil {
-			fmt.Printf("warning: could not fetch week %s: %v\n", weekDate, err)
-			continue
+			return fmt.Errorf("fetching week %s: %w", weekDate, err)
 		}
-		days := parseWeekplanHTML(string(raw))
-		allDays = append(allDays, days...)
-	}
-
-	// Deduplicate and limit to requested days
-	seen := map[string]bool{}
-	var unique []api.PlanDay
-	for _, d := range allDays {
-		if !seen[d.Date] {
-			seen[d.Date] = true
-			unique = append(unique, d)
+		var week api.MyWeek
+		if err := json.Unmarshal(raw, &week); err != nil {
+			return fmt.Errorf("parsing week %s: %w", weekDate, err)
+		}
+		for _, d := range week.MyDays {
+			byDate[d.DayKey] = d
 		}
 	}
 
-	if err := config.SaveCache("weekplan.json", unique); err != nil {
+	// Build one entry per requested day; days absent from the API are empty.
+	today := time.Now().Format("2006-01-02")
+	days := make([]api.PlanDay, 0, p.Days)
+	for i := 0; i < p.Days; i++ {
+		date := sinceDate.AddDate(0, 0, i)
+		key := date.Format("2006-01-02")
+
+		day := api.PlanDay{
+			Date:      key,
+			DayName:   germanWeekday(date.Weekday()),
+			DayNumber: fmt.Sprintf("%d", date.Day()),
+			IsToday:   key == today,
+			Recipes:   []api.PlanRecipe{},
+		}
+		if md, ok := byDate[key]; ok {
+			for _, r := range md.Recipes {
+				day.Recipes = append(day.Recipes, api.PlanRecipe{
+					ID:    r.ID,
+					Title: r.Title,
+					URL:   fmt.Sprintf("%s/recipes/recipe/%s/%s", cookidooBase, locale, r.ID),
+				})
+			}
+			day.CustomRecipeIDs = md.CustomerRecipeIDs
+		}
+		days = append(days, day)
+	}
+
+	if err := config.SaveCache("weekplan.json", days); err != nil {
 		return fmt.Errorf("saving plan: %w", err)
 	}
 
 	if ctx.JSON {
-		return ctx.PrintJSON(map[string]any{"data": unique, "synced": len(unique)})
+		return ctx.PrintJSON(map[string]any{"data": days, "count": len(days)})
 	}
 
-	fmt.Printf("Synced %d days.\n", len(unique))
-	printPlan(unique)
+	fmt.Printf("Synced %d days.\n", len(days))
+	printPlan(days)
 	return nil
+}
+
+func germanWeekday(d time.Weekday) string {
+	names := map[time.Weekday]string{
+		time.Monday: "Mo", time.Tuesday: "Di", time.Wednesday: "Mi",
+		time.Thursday: "Do", time.Friday: "Fr", time.Saturday: "Sa", time.Sunday: "So",
+	}
+	return names[d]
 }
 
 type PlanAddCmd struct {
 	RecipeID string `arg:"" help:"Recipe ID."`
 	Date     string `short:"d" help:"Date (YYYY-MM-DD, default: today)."`
+	Custom   bool   `short:"c" help:"Recipe is a custom (own) recipe."`
 }
 
 func (p *PlanAddCmd) Run(ctx *Context) error {
 	if p.Date == "" {
 		p.Date = time.Now().Format("2006-01-02")
 	}
-	id := ensurePrefix(p.RecipeID, "r")
+	id := p.RecipeID
+	source := "VORWERK"
+	if p.Custom {
+		source = "CUSTOMER"
+	} else {
+		id = ensurePrefix(id, "r")
+	}
 
 	cl, err := ctx.Client()
 	if err != nil {
@@ -116,7 +152,7 @@ func (p *PlanAddCmd) Run(ctx *Context) error {
 	}
 
 	_, err = cl.PutJSON(fmt.Sprintf("/planning/%s/api/my-day", locale), map[string]any{
-		"recipeSource": "VORWERK",
+		"recipeSource": source,
 		"recipeIds":    []string{id},
 		"dayKey":       p.Date,
 	})
@@ -134,17 +170,24 @@ func (p *PlanAddCmd) Run(ctx *Context) error {
 type PlanRemoveCmd struct {
 	RecipeID string `arg:"" help:"Recipe ID."`
 	Date     string `short:"d" required:"" help:"Date (YYYY-MM-DD)."`
+	Custom   bool   `short:"c" help:"Recipe is a custom (own) recipe."`
 }
 
 func (p *PlanRemoveCmd) Run(ctx *Context) error {
-	id := ensurePrefix(p.RecipeID, "r")
+	id := p.RecipeID
+	source := "VORWERK"
+	if p.Custom {
+		source = "CUSTOMER"
+	} else {
+		id = ensurePrefix(id, "r")
+	}
 
 	cl, err := ctx.Client()
 	if err != nil {
 		return err
 	}
 
-	err = cl.Delete(fmt.Sprintf("/planning/%s/api/my-day/%s/recipes/%s?recipeSource=VORWERK", locale, p.Date, id))
+	err = cl.Delete(fmt.Sprintf("/planning/%s/api/my-day/%s/recipes/%s?recipeSource=%s", locale, p.Date, id, source))
 	if err != nil {
 		return fmt.Errorf("removing recipe: %w", err)
 	}
@@ -160,22 +203,29 @@ type PlanMoveCmd struct {
 	RecipeID string `arg:"" help:"Recipe ID."`
 	From     string `short:"f" required:"" help:"Source date (YYYY-MM-DD)."`
 	To       string `short:"t" required:"" help:"Target date (YYYY-MM-DD)."`
+	Custom   bool   `short:"c" help:"Recipe is a custom (own) recipe."`
 }
 
 func (p *PlanMoveCmd) Run(ctx *Context) error {
-	id := ensurePrefix(p.RecipeID, "r")
+	id := p.RecipeID
+	source := "VORWERK"
+	if p.Custom {
+		source = "CUSTOMER"
+	} else {
+		id = ensurePrefix(id, "r")
+	}
 
 	cl, err := ctx.Client()
 	if err != nil {
 		return err
 	}
 
-	if err := cl.Delete(fmt.Sprintf("/planning/%s/api/my-day/%s/recipes/%s?recipeSource=VORWERK", locale, p.From, id)); err != nil {
+	if err := cl.Delete(fmt.Sprintf("/planning/%s/api/my-day/%s/recipes/%s?recipeSource=%s", locale, p.From, id, source)); err != nil {
 		return fmt.Errorf("removing from %s: %w", p.From, err)
 	}
 
 	if _, err := cl.PutJSON(fmt.Sprintf("/planning/%s/api/my-day", locale), map[string]any{
-		"recipeSource": "VORWERK",
+		"recipeSource": source,
 		"recipeIds":    []string{id},
 		"dayKey":       p.To,
 	}); err != nil {
@@ -196,70 +246,21 @@ func printPlan(days []api.PlanDay) {
 			marker = " [today]"
 		}
 		fmt.Printf("\n%s %s %s%s\n", d.DayName, d.DayNumber, d.Date, marker)
-		if len(d.Recipes) == 0 {
+		if len(d.Recipes) == 0 && len(d.CustomRecipeIDs) == 0 {
 			fmt.Println("  (no recipes)")
 		}
 		for _, r := range d.Recipes {
 			fmt.Printf("  %-12s  %s\n", r.ID, r.Title)
 		}
+		for _, id := range d.CustomRecipeIDs {
+			fmt.Printf("  %-12s  (custom recipe)\n", id)
+		}
 	}
 	fmt.Println()
 }
 
-var (
-	dayBlockRe    = regexp.MustCompile(`(?s)<plan-week-day[^>]*date="([^"]+)"[^>]*>(.*?)</plan-week-day>`)
-	dayShortRe    = regexp.MustCompile(`class="my-week__day-short">([^<]+)<`)
-	dayNumberRe   = regexp.MustCompile(`class="my-week__day-number">([^<]+)<`)
-	coreTileRe    = regexp.MustCompile(`(?s)<core-tile\s+data-recipe-id="([^"]+)"[^>]*>(.*?)</core-tile>`)
-	tileTitleRe   = regexp.MustCompile(`class="core-tile__description-text">([^<]+)<`)
-)
-
-func parseWeekplanHTML(html string) []api.PlanDay {
-	var days []api.PlanDay
-	for _, m := range dayBlockRe.FindAllStringSubmatch(html, -1) {
-		date := m[1]
-		block := m[2]
-
-		dayName := ""
-		if mn := dayShortRe.FindStringSubmatch(block); len(mn) > 1 {
-			dayName = strings.TrimSpace(mn[1])
-		}
-		dayNumber := ""
-		if mn := dayNumberRe.FindStringSubmatch(block); len(mn) > 1 {
-			dayNumber = strings.TrimSpace(mn[1])
-		}
-		isToday := strings.Contains(block, "my-week__today") || strings.Contains(block, ">Heute<")
-
-		recipes := []api.PlanRecipe{}
-		for _, tm := range coreTileRe.FindAllStringSubmatch(block, -1) {
-			recipeID := tm[1]
-			recipeBlock := tm[2]
-			title := ""
-			if tn := tileTitleRe.FindStringSubmatch(recipeBlock); len(tn) > 1 {
-				title = strings.TrimSpace(tn[1])
-			}
-			if title != "" {
-				recipes = append(recipes, api.PlanRecipe{
-					ID:    recipeID,
-					Title: title,
-					URL:   fmt.Sprintf("%s/recipes/recipe/%s/%s", cookidooBase, locale, recipeID),
-				})
-			}
-		}
-
-		days = append(days, api.PlanDay{
-			Date:      date,
-			DayName:   dayName,
-			DayNumber: dayNumber,
-			IsToday:   isToday,
-			Recipes:   recipes,
-		})
-	}
-	return days
-}
-
 func ensurePrefix(s, prefix string) string {
-	if strings.HasPrefix(s, prefix) {
+	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
 		return s
 	}
 	return prefix + s
@@ -276,14 +277,4 @@ func loadPlanCache() ([]api.PlanDay, error) {
 		days[i].IsToday = days[i].Date == today
 	}
 	return days, nil
-}
-
-// marshalPlan is used by status.go
-func planCacheInfo() string {
-	var days []api.PlanDay
-	if err := config.LoadCache("weekplan.json", &days); err != nil {
-		return "no cache"
-	}
-	b, _ := json.Marshal(map[string]int{"days": len(days)})
-	return string(b)
 }

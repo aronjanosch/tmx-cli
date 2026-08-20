@@ -19,13 +19,16 @@ func (t *TodayCmd) Run(ctx *Context) error {
 			if ctx.JSON {
 				return ctx.PrintJSON(d)
 			}
-			if len(d.Recipes) == 0 {
+			if len(d.Recipes) == 0 && len(d.CustomRecipeIDs) == 0 {
 				fmt.Println("No recipes planned for today.")
 				return nil
 			}
 			fmt.Printf("Today (%s):\n", today)
 			for _, r := range d.Recipes {
 				fmt.Printf("  %-12s  %s\n", r.ID, r.Title)
+			}
+			for _, id := range d.CustomRecipeIDs {
+				fmt.Printf("  %-12s  (custom recipe)\n", id)
 			}
 			return nil
 		}

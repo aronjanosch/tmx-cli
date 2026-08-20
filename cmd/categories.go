@@ -1,15 +1,13 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/aronjanosch/tmx-cli/internal/client"
 	"github.com/aronjanosch/tmx-cli/internal/config"
 )
 
@@ -70,16 +68,11 @@ func (c *CategoriesSyncCmd) Run(ctx *Context) error {
 		return err
 	}
 
-	token, err := getSearchToken(cl)
-	if err != nil {
-		return fmt.Errorf("could not get search token (are you logged in?): %w", err)
-	}
-
 	if !ctx.JSON {
 		fmt.Println("Fetching category IDs from Algolia...")
 	}
 
-	categoryIDs, err := fetchCategoryFacets(token)
+	categoryIDs, err := fetchCategoryFacets(cl)
 	if err != nil {
 		return fmt.Errorf("fetching category IDs: %w", err)
 	}
@@ -96,7 +89,7 @@ func (c *CategoriesSyncCmd) Run(ctx *Context) error {
 			fmt.Printf("  [%d/%d] %s\r", i+1, len(categoryIDs), catID)
 		}
 
-		recipeID, err := searchOneByCategoryID(token, catID)
+		recipeID, err := searchOneByCategoryID(cl, catID)
 		if err != nil || recipeID == "" {
 			errors = append(errors, fmt.Sprintf("%s: no recipe found", catID))
 			continue
@@ -155,33 +148,16 @@ func (c *CategoriesSyncCmd) Run(ctx *Context) error {
 	return nil
 }
 
-func fetchCategoryFacets(token string) ([]string, error) {
+func fetchCategoryFacets(cl *client.Client) ([]string, error) {
 	params := map[string]any{
 		"query":       "",
 		"hitsPerPage": 0,
 		"facets":      []string{"categories.id"},
 	}
-	body, _ := json.Marshal(params)
-	algoliaURL := fmt.Sprintf("https://%s-dsn.algolia.net/1/indexes/%s/query", algoliaAppID, algoliaIndex)
-	req, err := http.NewRequest("POST", algoliaURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-Algolia-Application-Id", algoliaAppID)
-	req.Header.Set("X-Algolia-API-Key", token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-
 	var result struct {
 		Facets map[string]map[string]int `json:"facets"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := algoliaQueryAuto(cl, algoliaIndex, params, &result); err != nil {
 		return nil, err
 	}
 
@@ -193,40 +169,24 @@ func fetchCategoryFacets(token string) ([]string, error) {
 	return ids, nil
 }
 
-func searchOneByCategoryID(token, catID string) (string, error) {
+func searchOneByCategoryID(cl *client.Client, catID string) (string, error) {
 	params := map[string]any{
 		"query":       "",
 		"hitsPerPage": 1,
 		"filters":     fmt.Sprintf("categories.id:%s", catID),
 	}
-	body, _ := json.Marshal(params)
-	algoliaURL := fmt.Sprintf("https://%s-dsn.algolia.net/1/indexes/%s/query", algoliaAppID, algoliaIndex)
-	req, err := http.NewRequest("POST", algoliaURL, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("X-Algolia-Application-Id", algoliaAppID)
-	req.Header.Set("X-Algolia-API-Key", token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-
 	var result struct {
-		Hits []map[string]any `json:"hits"`
+		Hits []struct {
+			ID string `json:"id"`
+		} `json:"hits"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := algoliaQueryAuto(cl, algoliaIndex, params, &result); err != nil {
 		return "", err
 	}
 	if len(result.Hits) == 0 {
 		return "", nil
 	}
-	id, _ := result.Hits[0]["id"].(string)
-	return id, nil
+	return result.Hits[0].ID, nil
 }
 
 func extractCategoryName(recipe map[string]any, catID string) string {

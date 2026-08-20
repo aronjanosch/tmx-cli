@@ -47,10 +47,10 @@ func (s *SetupCmd) Run(ctx *Context) error {
 		}
 		if ctx.JSON {
 			return ctx.PrintJSON(map[string]any{
-				"status":    "saved",
-				"tm":        ctx.Config.TMVersion,
-				"diet":      ctx.Config.Diet,
-				"max_time":  ctx.Config.MaxTime,
+				"status":   "saved",
+				"tm":       ctx.Config.TMVersion,
+				"diet":     ctx.Config.Diet,
+				"max_time": ctx.Config.MaxTime,
 			})
 		}
 		fmt.Println("Configuration saved.")

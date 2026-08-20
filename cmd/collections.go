@@ -1,21 +1,30 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 
 	"github.com/aronjanosch/tmx-cli/internal/client"
 )
 
 type CollectionsCmd struct {
-	Search CollectionsSearchCmd `cmd:"" help:"Search public collections."`
-	List   CollectionsListCmd   `cmd:"" help:"List your saved collections."`
-	Show   CollectionsShowCmd   `cmd:"" help:"Show a collection and its recipes."`
+	Search       CollectionsSearchCmd       `cmd:"" help:"Search public collections."`
+	List         CollectionsListCmd         `cmd:"" help:"List your saved collections."`
+	Show         CollectionsShowCmd         `cmd:"" help:"Show a collection and its recipes."`
+	Mine         CollectionsMineCmd         `cmd:"" help:"List your own recipe lists."`
+	Create       CollectionsCreateCmd       `cmd:"" help:"Create an own recipe list."`
+	Delete       CollectionsDeleteCmd       `cmd:"" help:"Delete an own recipe list."`
+	AddRecipe    CollectionsAddRecipeCmd    `cmd:"add-recipe" help:"Add recipes to an own list."`
+	RemoveRecipe CollectionsRemoveRecipeCmd `cmd:"remove-recipe" help:"Remove a recipe from an own list."`
+	Save         CollectionsSaveCmd         `cmd:"" help:"Save a public collection to your account."`
+	Unsave       CollectionsUnsaveCmd       `cmd:"" help:"Remove a saved public collection."`
 }
+
+const (
+	customListAccept  = "application/vnd.vorwerk.organize.custom-list.mobile+json"
+	managedListAccept = "application/vnd.vorwerk.organize.managed-list.mobile+json"
+)
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
@@ -37,12 +46,8 @@ func (c *CollectionsSearchCmd) Run(ctx *Context) error {
 	if err != nil {
 		return err
 	}
-	token, err := getSearchToken(cl)
-	if err != nil {
-		return fmt.Errorf("could not get search token (are you logged in?): %w", err)
-	}
 
-	hits, total, err := algoliaCollections(token, c.Query, c.Limit)
+	hits, total, err := algoliaCollections(cl, c.Query, c.Limit)
 	if err != nil {
 		return err
 	}
@@ -67,47 +72,20 @@ func (c *CollectionsSearchCmd) Run(ctx *Context) error {
 	return nil
 }
 
-func algoliaCollections(token, query string, limit int) ([]collectionHit, int, error) {
+func algoliaCollections(cl *client.Client, query string, limit int) ([]collectionHit, int, error) {
 	params := map[string]any{
 		"query":       query,
 		"hitsPerPage": limit,
 		"filters":     "countries:de",
 	}
-	body, _ := json.Marshal(params)
-	url := fmt.Sprintf("https://%s-dsn.algolia.net/1/indexes/collections-production-de/query", algoliaAppID)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, 0, err
-	}
-	req.Header.Set("X-Algolia-Application-Id", algoliaAppID)
-	req.Header.Set("X-Algolia-API-Key", token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-
 	var result struct {
-		Hits   []map[string]any `json:"hits"`
-		NbHits int              `json:"nbHits"`
+		Hits   []collectionHit `json:"hits"`
+		NbHits int             `json:"nbHits"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if err := algoliaQueryAuto(cl, "collections-production-de", params, &result); err != nil {
 		return nil, 0, err
 	}
-
-	hits := make([]collectionHit, 0, len(result.Hits))
-	for _, h := range result.Hits {
-		id, _ := h["id"].(string)
-		title, _ := h["title"].(string)
-		desc, _ := h["description"].(string)
-		image, _ := h["image"].(string)
-		published, _ := h["publishedAt"].(string)
-		hits = append(hits, collectionHit{ID: id, Title: title, Description: desc, Image: image, PublishedAt: published})
-	}
-	return hits, result.NbHits, nil
+	return result.Hits, result.NbHits, nil
 }
 
 // ── Managed list helpers ──────────────────────────────────────────────────────
@@ -133,8 +111,7 @@ type managedList struct {
 }
 
 func fetchManagedLists(cl *client.Client) ([]managedList, error) {
-	url := fmt.Sprintf("https://cookidoo.de/organize/%s/api/managed-list", locale)
-	raw, err := cl.GetURL(url)
+	raw, err := cl.Get(fmt.Sprintf("/organize/%s/api/managed-list", locale))
 	if err != nil {
 		return nil, fmt.Errorf("could not fetch managed lists (are you logged in?): %w", err)
 	}
@@ -148,8 +125,7 @@ func fetchManagedLists(cl *client.Client) ([]managedList, error) {
 }
 
 func fetchManagedList(cl *client.Client, id string) (*managedList, error) {
-	url := fmt.Sprintf("https://cookidoo.de/organize/%s/api/managed-list/%s", locale, id)
-	raw, err := cl.GetURL(url)
+	raw, err := cl.Get(fmt.Sprintf("/organize/%s/api/managed-list/%s", locale, id))
 	if err != nil {
 		return nil, fmt.Errorf("could not fetch collection (are you logged in?): %w", err)
 	}
@@ -158,6 +134,190 @@ func fetchManagedList(cl *client.Client, id string) (*managedList, error) {
 		return nil, err
 	}
 	return &list, nil
+}
+
+// ── Own (custom) lists ────────────────────────────────────────────────────────
+
+type CollectionsMineCmd struct{}
+
+func (c *CollectionsMineCmd) Run(ctx *Context) error {
+	cl, err := ctx.Client()
+	if err != nil {
+		return err
+	}
+	raw, err := cl.Request("GET", fmt.Sprintf("/organize/%s/api/custom-list", locale), nil,
+		map[string]string{"Accept": customListAccept})
+	if err != nil {
+		return fmt.Errorf("fetching own lists (are you logged in?): %w", err)
+	}
+	var data struct {
+		Lists []managedList `json:"customlists"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return err
+	}
+
+	if ctx.JSON {
+		return ctx.PrintJSON(map[string]any{"data": data.Lists, "count": len(data.Lists)})
+	}
+	if len(data.Lists) == 0 {
+		fmt.Println("No own lists found.")
+		return nil
+	}
+	fmt.Printf("%-28s  %-40s  %s\n", "ID", "Title", "Recipes")
+	fmt.Printf("%-28s  %-40s  %s\n", "--", "-----", "-------")
+	for _, l := range data.Lists {
+		n := 0
+		for _, ch := range l.Chapters {
+			n += len(ch.Recipes)
+		}
+		fmt.Printf("%-28s  %-40s  %d\n", l.ID, l.Title, n)
+	}
+	return nil
+}
+
+type CollectionsCreateCmd struct {
+	Title string `arg:"" help:"List title."`
+}
+
+func (c *CollectionsCreateCmd) Run(ctx *Context) error {
+	cl, err := ctx.Client()
+	if err != nil {
+		return err
+	}
+	raw, err := cl.Request("POST", fmt.Sprintf("/organize/%s/api/custom-list", locale),
+		map[string]string{"title": c.Title},
+		map[string]string{"Accept": customListAccept})
+	if err != nil {
+		return fmt.Errorf("creating list: %w", err)
+	}
+	var resp struct {
+		Content managedList `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil || resp.Content.ID == "" {
+		return fmt.Errorf("list created but response had no id: %s", truncateStr(string(raw), 200))
+	}
+
+	if ctx.JSON {
+		return ctx.PrintJSON(map[string]any{"status": "created", "id": resp.Content.ID, "title": c.Title})
+	}
+	fmt.Printf("Created list %q (%s).\n", c.Title, resp.Content.ID)
+	return nil
+}
+
+type CollectionsDeleteCmd struct {
+	ID string `arg:"" help:"List ID."`
+}
+
+func (c *CollectionsDeleteCmd) Run(ctx *Context) error {
+	cl, err := ctx.Client()
+	if err != nil {
+		return err
+	}
+	if _, err := cl.Request("DELETE", fmt.Sprintf("/organize/%s/api/custom-list/%s", locale, c.ID), nil,
+		map[string]string{"Accept": customListAccept}); err != nil {
+		return fmt.Errorf("deleting list: %w", err)
+	}
+
+	if ctx.JSON {
+		return ctx.PrintJSON(map[string]string{"status": "deleted", "id": c.ID})
+	}
+	fmt.Printf("Deleted list %s.\n", c.ID)
+	return nil
+}
+
+type CollectionsAddRecipeCmd struct {
+	ListID    string   `arg:"" help:"List ID."`
+	RecipeIDs []string `arg:"" help:"Recipe IDs to add."`
+}
+
+func (c *CollectionsAddRecipeCmd) Run(ctx *Context) error {
+	cl, err := ctx.Client()
+	if err != nil {
+		return err
+	}
+	ids := make([]string, len(c.RecipeIDs))
+	for i, id := range c.RecipeIDs {
+		ids[i] = ensurePrefix(id, "r")
+	}
+	if _, err := cl.Request("PUT", fmt.Sprintf("/organize/%s/api/custom-list/%s", locale, c.ListID),
+		map[string]any{"recipeIds": ids},
+		map[string]string{"Accept": customListAccept}); err != nil {
+		return fmt.Errorf("adding recipes: %w", err)
+	}
+
+	if ctx.JSON {
+		return ctx.PrintJSON(map[string]any{"status": "added", "listId": c.ListID, "ids": ids})
+	}
+	fmt.Printf("Added %d recipe(s) to %s.\n", len(ids), c.ListID)
+	return nil
+}
+
+type CollectionsRemoveRecipeCmd struct {
+	ListID   string `arg:"" help:"List ID."`
+	RecipeID string `arg:"" help:"Recipe ID to remove."`
+}
+
+func (c *CollectionsRemoveRecipeCmd) Run(ctx *Context) error {
+	cl, err := ctx.Client()
+	if err != nil {
+		return err
+	}
+	id := ensurePrefix(c.RecipeID, "r")
+	if _, err := cl.Request("DELETE",
+		fmt.Sprintf("/organize/%s/api/custom-list/%s/recipes/%s", locale, c.ListID, id), nil,
+		map[string]string{"Accept": customListAccept}); err != nil {
+		return fmt.Errorf("removing recipe: %w", err)
+	}
+
+	if ctx.JSON {
+		return ctx.PrintJSON(map[string]string{"status": "removed", "listId": c.ListID, "id": id})
+	}
+	fmt.Printf("Removed %s from %s.\n", id, c.ListID)
+	return nil
+}
+
+type CollectionsSaveCmd struct {
+	ID string `arg:"" help:"Public collection ID (e.g. col500561)."`
+}
+
+func (c *CollectionsSaveCmd) Run(ctx *Context) error {
+	cl, err := ctx.Client()
+	if err != nil {
+		return err
+	}
+	if _, err := cl.Request("POST", fmt.Sprintf("/organize/%s/api/managed-list", locale),
+		map[string]string{"collectionId": c.ID},
+		map[string]string{"Accept": managedListAccept}); err != nil {
+		return fmt.Errorf("saving collection: %w", err)
+	}
+
+	if ctx.JSON {
+		return ctx.PrintJSON(map[string]string{"status": "saved", "id": c.ID})
+	}
+	fmt.Printf("Saved collection %s.\n", c.ID)
+	return nil
+}
+
+type CollectionsUnsaveCmd struct {
+	ID string `arg:"" help:"Saved collection ID."`
+}
+
+func (c *CollectionsUnsaveCmd) Run(ctx *Context) error {
+	cl, err := ctx.Client()
+	if err != nil {
+		return err
+	}
+	if _, err := cl.Request("DELETE", fmt.Sprintf("/organize/%s/api/managed-list/%s", locale, c.ID), nil,
+		map[string]string{"Accept": managedListAccept}); err != nil {
+		return fmt.Errorf("removing saved collection: %w", err)
+	}
+
+	if ctx.JSON {
+		return ctx.PrintJSON(map[string]string{"status": "unsaved", "id": c.ID})
+	}
+	fmt.Printf("Removed saved collection %s.\n", c.ID)
+	return nil
 }
 
 // ── List ──────────────────────────────────────────────────────────────────────
@@ -245,6 +405,13 @@ func (c *CollectionsShowCmd) Run(ctx *Context) error {
 	}
 	fmt.Println()
 	return nil
+}
+
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }
 
 func wordWrap(s string, width int) string {
