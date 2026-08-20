@@ -26,9 +26,12 @@ sudo mv tmx /usr/local/bin/
 
 ```bash
 tmx login               # OAuth login with your Cookidoo account
+tmx login --save        # also store credentials (0600) for automatic re-login
 tmx setup               # Configure TM version, diet preference, max cooking time
 tmx status              # Check login and config
 ```
+
+Exit codes: `0` ok, `1` error, `3` session expired (re-run `tmx login`, or use `--save` once).
 
 Config is stored at `~/.config/tmx/`.
 
@@ -42,31 +45,49 @@ tmx search "pasta"                        # search recipes
 tmx search "curry" -n 20                  # more results
 tmx search "salad" -t 15                  # max 15 minutes
 tmx search "" -c vegetarisch              # browse by category
-tmx search "soup" --tm TM6               # filter by TM version
+tmx search "soup" --tm TM6                # filter by TM version
+tmx search "" --min-rating 4              # well-rated only
+tmx search "" -I Kürbis -I Zwiebel        # recipes using these ingredients
+tmx search "curry" -x Fleisch             # without an ingredient
 ```
 
 ### recipe
 ```bash
-tmx recipe show <id>                      # ingredients, steps, nutrition
+tmx recipe show <id>                      # meta; -i ingredients, -s steps, -n nutrition, --full
+tmx recipe fetch <url>                    # scrape any recipe site → import JSON
+tmx recipe import recipe.json             # import to your Cookidoo "own recipes"
+tmx recipe import --url <url>             # scrape + import in one go
+tmx recipe mine                           # list own recipes
+tmx recipe copy r130616 -s 2              # copy a Cookidoo recipe, rescaled to 2 servings
+tmx recipe delete <id>                    # delete an own recipe
 ```
+
+Import any recipe from the web: `recipe fetch` extracts the schema.org recipe data,
+you (or your AI agent) add Thermomix time/temp/speed per step, `recipe import` uploads
+it with proper Cookidoo TTS annotations ("20 Min./100°C/Stufe 1"). See SKILL.md for
+the JSON schema.
 
 ### plan
 ```bash
 tmx plan sync                             # sync from Cookidoo
 tmx plan show                             # show current week (from cache)
-tmx plan add <id> <day>                   # add recipe (mon/tue/wed/thu/fri/sat/sun)
-tmx plan remove <id> <day>
-tmx plan move <id> <from> <to>
+tmx plan add <id> --date=2026-08-22       # add recipe (default: today; --custom for own recipes)
+tmx plan remove <id> --date=2026-08-22
+tmx plan move <id> --from=2026-08-22 --to=2026-08-23
 tmx today                                 # today's recipes only
 ```
 
 ### shopping
 ```bash
-tmx shopping show                         # current list
+tmx shopping show                         # current list with item ids + checked state
 tmx shopping from-plan                    # generate from meal plan
 tmx shopping add <recipe-id>              # add recipe ingredients
-tmx shopping add-item "milk" "bread"      # add custom items
 tmx shopping remove <recipe-id>
+tmx shopping check <item-id>...           # tick off items
+tmx shopping uncheck <item-id>...
+tmx shopping add-item "milk" "bread"      # add custom items
+tmx shopping edit-item <id> "oat milk"
+tmx shopping remove-item <id>...
 tmx shopping clear
 tmx shopping export -f markdown           # export (text/markdown/json)
 ```
@@ -83,6 +104,12 @@ tmx favorites remove <id>
 tmx collections search "pasta"            # search public collections
 tmx collections list                      # your saved collections
 tmx collections show <id>                 # collection details + recipes
+tmx collections save <id>                 # save/unsave a public collection
+tmx collections mine                      # your own recipe lists
+tmx collections create "Weekend"          # own list CRUD
+tmx collections add-recipe <list> <id>...
+tmx collections remove-recipe <list> <id>
+tmx collections delete <list>
 ```
 
 ### categories
@@ -93,6 +120,7 @@ tmx categories sync                       # fetch from Cookidoo
 
 ### other
 ```bash
+tmx whoami                                # account + subscription info
 tmx status                                # login + config info
 tmx cache clear                           # clear cached data
 tmx setup [--tm TM6] [--diet vegetarisch] [--max-time 30]

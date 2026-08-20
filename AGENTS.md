@@ -19,7 +19,7 @@ Go CLI for Thermomix/Cookidoo (meal plans, recipe search, shopping lists).
 Designed for both human use and AI agents (OpenClaw).
 
 - Binary: `tmx`
-- Module: `github.com/aron/tmx-cli`
+- Module: `github.com/aronjanosch/tmx-cli`
 - Framework: [Kong](https://github.com/alecthomas/kong) (declarative CLI via struct tags)
 - Config/cache: `~/.config/tmx/`
 
@@ -36,6 +36,8 @@ JSON success: `{"data": [...], "count": N}`
 JSON error: `{"error": "message"}`
 
 Errors go to stderr. JSON errors go to stdout (so agents can parse them).
+Exit codes: 0 ok, 1 error, 3 session expired (`client.ErrUnauthorized`).
+Auto re-login on 401 when credentials are stored (`tmx login --save`).
 
 ## Code conventions
 
@@ -57,6 +59,21 @@ Known surprises:
 - Steps: `recipeStepGroups[].recipeSteps[].formattedText` (not `recipeSteps[].description`)
 - Nutrition number: may be string or float — parse both
 - Nutrition unit: `unittype` or `unitType` — check both casings
+- Shopping list `recipeIngredientGroups` is a **flat item list**, not groups
+- Shopping remove-recipe wants the list-entry **ULID**, not the rNNN id (`shopping/{lang}/recipes/remove`)
+- Quantities: `{"value": N}` or range `{"from": N, "to": M}`
+- `totalTime` in planning/collection/shopping responses is a decimal **string** ("1500.0"); in custom recipes ISO-8601 ("PT30M") or seconds — `api.FlexDuration` parses both
+- Custom recipe content: keys vary (`ingredients`/`recipeIngredient`, `tools`/`tool`, `yield`/`recipeYield`); items are strings or `{"text": ...}` — `api.FlexTextList`
+- Organize + created-recipes endpoints need vendor `Accept` headers (see cmd/collections.go, cmd/import.go)
+- Custom recipe creation is two-step: POST name → wait ~3s → PATCH content (backend propagation)
+- TTS annotation offsets count unicode code points, not bytes
+- Custom recipe `tools` only accepts TM versions (TM5/TM6/TM7); other equipment → 400 validationError
+- TTS `speed` enum has no "Turbo"; send `{"turbo": true}` instead (backend drops it, but the step text keeps the notation)
+- Custom recipe GET: plain `application/json` view omits `hints`/annotations — use the vendor Accept for full content
+- Search image URLs contain literal `{assethost}`/`{transformation}` placeholders — substitute `assets.tmecosys.com` / `t_web_shared_recipe_221x240`
+- Native `/search/{lang}` `ingredients`/`excludeIngredients` params only match a curated facet vocabulary ("Kürbis" works, "Kartoffel" doesn't) — tmx verifies ingredients client-side instead
+- `/community/profile` + shopping/planning writes accept any of the three session cookies being stale as long as `_oauth2_proxy` refreshes; a full 401 triggers tmx auto-relogin (~1s) when credentials are stored
+- Endpoint/payload reference: [miaucl/cookidoo-api](https://github.com/miaucl/cookidoo-api) `const.py` + `docs/raw-api-requests/`
 
 ## Context efficiency
 
